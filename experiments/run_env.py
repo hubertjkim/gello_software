@@ -147,16 +147,26 @@ def main(args):
 
             curr_joints = env.get_obs()["joint_positions"]
             if reset_joints.shape == curr_joints.shape:
-                max_delta = (np.abs(curr_joints - reset_joints)).max()
-                if max_delta > 0.8:
+                # Arm-only delta check. joint_positions[6] is the SCS3045M
+                # gripper position in raw Modbus units (~200-2200), not
+                # radians, so including it would always trip the 0.8 rad
+                # gate (e.g. open=2200 vs reference 0 → max_delta=2200).
+                arm_delta = np.abs(curr_joints[:6] - reset_joints[:6]).max()
+                if arm_delta > 0.8:
                     print(
-                        f"\nReset aborted: max joint delta {max_delta:.3f} rad > 0.8."
+                        f"\nReset aborted: max arm joint delta {arm_delta:.3f} rad > 0.8."
                     )
-                    print(f"  current: {[f'{x:.3f}' for x in curr_joints]}")
-                    print(f"  reset:   {[f'{x:.3f}' for x in reset_joints]}")
+                    print(f"  current: {[f'{x:.3f}' for x in curr_joints[:6]]}")
+                    print(f"  reset:   {[f'{x:.3f}' for x in reset_joints[:6]]}")
                     print("Manually drive the xArm closer to the reset pose, then re-run.")
                     return
-                steps = min(int(max_delta / 0.01), 100)
+                # Hold the gripper at its current position during the arm
+                # reset interpolation — reset_joints[6]=0 would step the
+                # gripper through normalized-space values that clamp to
+                # GRIPPER_CLOSE in xarm_robot._set_gripper_position.
+                reset_joints = reset_joints.copy()
+                reset_joints[6] = curr_joints[6]
+                steps = min(int(arm_delta / 0.01), 100)
 
                 for jnt in np.linspace(curr_joints, reset_joints, steps):
                     env.step(jnt)
@@ -190,7 +200,11 @@ def main(args):
     obs = env.get_obs()
     joints = obs["joint_positions"]
 
-    abs_deltas = np.abs(start_pos - joints)
+    # Arm-only delta check. joint_positions[6] is the SCS3045M gripper
+    # position in raw Modbus units on the follower (~200-2200) but
+    # normalized [0,1] on the leader, so a raw difference here would
+    # always trip the 0.8 rad gate.
+    abs_deltas = np.abs(start_pos[:6] - joints[:6])
     id_max_joint_delta = np.argmax(abs_deltas)
 
     max_joint_delta = 0.8
@@ -201,8 +215,8 @@ def main(args):
         for i, delta, joint, current_j in zip(
             ids,
             abs_deltas[id_mask],
-            start_pos[id_mask],
-            joints[id_mask],
+            start_pos[:6][id_mask],
+            joints[:6][id_mask],
         ):
             print(
                 f"joint[{i}]: \t delta: {delta:4.3f} , leader: \t{joint:4.3f} , follower: \t{current_j:4.3f}"

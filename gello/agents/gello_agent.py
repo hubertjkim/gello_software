@@ -44,7 +44,19 @@ class DynamixelRobotConfig:
 
 
 PORT_CONFIG_MAP: Dict[str, DynamixelRobotConfig] = {
-    # xArm Lite 6 (this build) — calibrated 2026-05-14 via generate_yam_config.py
+    # xArm Lite 6 (this build) — recalibrated 2026-05-19 via gello_get_offset.py
+    # after joint 7 (gripper Dynamixel) was reseated. Two changes from the
+    # 2026-05-14 calibration:
+    #   - joint 6 offset 2π → 0 to eliminate the wrap-around that was
+    #     tripping run_env's safety gate.
+    #   - gripper open/close shifted because the trigger servo's reference
+    #     angle changed when it was unplugged/replugged.
+    # Joints 1-5 offsets are unchanged at π; joint 3's recalibration would
+    # have come out at 3π/2 with --start-joints 0 0 0 0 0 0, but we want
+    # the leader's reported state to match the follower's reset pose
+    # ([0, 0, π/2, 0, 0, 0]) at the same physical pose, so joint 3 is
+    # adjusted to π (= 3π/2 - π/2) algebraically — equivalent to having
+    # passed --start-joints 0 0 1.5708 0 0 0 to the calibration script.
     "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTB8HQU5-if00-port0": DynamixelRobotConfig(
         joint_ids=(1, 2, 3, 4, 5, 6),
         joint_offsets=(
@@ -53,10 +65,10 @@ PORT_CONFIG_MAP: Dict[str, DynamixelRobotConfig] = {
             3.14159,
             3.14159,
             3.14159,
-            6.28319,
+            0.0,
         ),
         joint_signs=(1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
-        gripper_config=(7, 82.2, 22.7),
+        gripper_config=(7, 106.9, 65.1),
     ),
     # yam
     "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA2U4GA-if00-port0": DynamixelRobotConfig(

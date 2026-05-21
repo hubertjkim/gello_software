@@ -126,7 +126,7 @@ class Rate:
 class XArmRobot(Robot):
     # SCS3045M Modbus position range (see OpenParallelGripper 659f8fa6).
     GRIPPER_OPEN = 2200
-    GRIPPER_CLOSE = 200
+    GRIPPER_CLOSE = 900
     #  MAX_DELTA = 0.2
     DEFAULT_MAX_DELTA = 0.05
 

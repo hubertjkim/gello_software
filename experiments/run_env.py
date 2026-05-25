@@ -204,7 +204,11 @@ def main(args):
     # position in raw Modbus units on the follower (~200-2200) but
     # normalized [0,1] on the leader, so a raw difference here would
     # always trip the 0.8 rad gate.
-    abs_deltas = np.abs(start_pos[:6] - joints[:6])
+    # Wrap into (-pi, pi] so 0, +/-pi, +/-2pi are treated as the same pose.
+    leader_wrapped = (start_pos[:6] + np.pi) % (2 * np.pi) - np.pi
+    follower_wrapped = (joints[:6] + np.pi) % (2 * np.pi) - np.pi
+    signed_deltas = (start_pos[:6] - joints[:6] + np.pi) % (2 * np.pi) - np.pi
+    abs_deltas = np.abs(signed_deltas)
     id_max_joint_delta = np.argmax(abs_deltas)
 
     max_joint_delta = 0.8
@@ -215,8 +219,8 @@ def main(args):
         for i, delta, joint, current_j in zip(
             ids,
             abs_deltas[id_mask],
-            start_pos[:6][id_mask],
-            joints[:6][id_mask],
+            leader_wrapped[id_mask],
+            follower_wrapped[id_mask],
         ):
             print(
                 f"joint[{i}]: \t delta: {delta:4.3f} , leader: \t{joint:4.3f} , follower: \t{current_j:4.3f}"
@@ -233,23 +237,38 @@ def main(args):
         obs = env.get_obs()
         command_joints = agent.act(obs)
         current_joints = obs["joint_positions"]
-        delta = command_joints - current_joints
-        max_joint_delta = np.abs(delta).max()
+        # Arm-only ramp with circular wrap. Gripper element (index 6) is on
+        # a different scale (leader [0,1] vs follower raw Modbus ~900-2200),
+        # so mixing it into the arm delta would saturate the gripper to its
+        # clamp on every step. Pass the leader's gripper command straight
+        # through; xarm_robot's _robot_thread maps [0,1] -> raw counts.
+        arm_delta = (
+            command_joints[:6] - current_joints[:6] + np.pi
+        ) % (2 * np.pi) - np.pi
+        max_joint_delta = np.abs(arm_delta).max()
         if max_joint_delta > max_delta:
-            delta = delta / max_joint_delta * max_delta
-        env.step(current_joints + delta)
+            arm_delta = arm_delta / max_joint_delta * max_delta
+        step_command = np.concatenate(
+            [current_joints[:6] + arm_delta, [command_joints[6]]]
+        )
+        env.step(step_command)
 
     obs = env.get_obs()
     joints = obs["joint_positions"]
     action = agent.act(obs)
-    if (action - joints > 0.5).any():
+    # Arm-only and circular: gripper element is on a different scale (see
+    # comment above the first delta check); arm joints must compare modulo 2pi.
+    action_diff = (action[:6] - joints[:6] + np.pi) % (2 * np.pi) - np.pi
+    if (action_diff > 0.5).any():
         print("Action is too big")
 
         # print which joints are too big
-        joint_index = np.where(action - joints > 0.8)
+        joint_index = np.where(action_diff > 0.8)
+        leader_wrapped = (action[:6] + np.pi) % (2 * np.pi) - np.pi
+        follower_wrapped = (joints[:6] + np.pi) % (2 * np.pi) - np.pi
         for j in joint_index:
             print(
-                f"Joint [{j}], leader: {action[j]}, follower: {joints[j]}, diff: {action[j] - joints[j]}"
+                f"Joint [{j}], leader: {leader_wrapped[j]}, follower: {follower_wrapped[j]}, diff: {action_diff[j]}"
             )
         exit()
 

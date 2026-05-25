@@ -32,7 +32,11 @@ def move_to_start_position(
     obs = env.get_obs()
     joints = obs["joint_positions"]
 
-    abs_deltas = np.abs(start_pos - joints)
+    # Wrap into (-pi, pi] so 0, +/-pi, +/-2pi are treated as the same pose.
+    leader_wrapped = (start_pos + np.pi) % (2 * np.pi) - np.pi
+    follower_wrapped = (joints + np.pi) % (2 * np.pi) - np.pi
+    signed_deltas = (start_pos - joints + np.pi) % (2 * np.pi) - np.pi
+    abs_deltas = np.abs(signed_deltas)
     id_max_joint_delta = np.argmax(abs_deltas)
 
     max_joint_delta = DEFAULT_MAX_JOINT_DELTA
@@ -43,8 +47,8 @@ def move_to_start_position(
         for i, delta, joint, current_j in zip(
             ids,
             abs_deltas[id_mask],
-            start_pos[id_mask],
-            joints[id_mask],
+            leader_wrapped[id_mask],
+            follower_wrapped[id_mask],
         ):
             print(
                 f"joint[{i}]: \t delta: {delta:4.3f} , leader: \t{joint:4.3f} , follower: \t{current_j:4.3f}"
@@ -179,6 +183,20 @@ def run_control_loop(
                 print(message, end="", flush=True)
 
         action = agent.act(obs)
+
+        # Wrap each arm command onto the follower's current 2pi branch (short
+        # arc per cycle), then cap the per-cycle magnitude so a leader branch
+        # swap or yank can't exceed the xArm servo-mode velocity limit
+        # (code=1). Gripper element [6] passes through (leader [0,1] space).
+        current_joints = obs["joint_positions"]
+        arm_short = (
+            action[:6] - current_joints[:6] + np.pi
+        ) % (2 * np.pi) - np.pi
+        max_step = 0.1  # rad/cycle; at 50 Hz ~= 5 rad/s
+        max_arm = np.abs(arm_short).max()
+        if max_arm > max_step:
+            arm_short = arm_short / max_arm * max_step
+        action = np.concatenate([current_joints[:6] + arm_short, action[6:]])
 
         # Handle save interface
         if save_interface is not None:

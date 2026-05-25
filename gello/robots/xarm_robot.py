@@ -17,6 +17,14 @@ _SCS_POS_WRITE_REG = 0x0080      # fn 0x06 target register
 _SCS_POS_READ_REG = 0x0101       # fn 0x03 base register
 _SCS_POS_READ_REGCOUNT = 2
 
+# Gripper rate-limit + deadband (see docs/log/2026-05-25-jittering-issue.md).
+# Cuts SCS3045M Modbus pressure on the xArm T-GPIO bus from the 50 Hz arm loop
+# down to ~10 Hz, and skips writes when the commanded position hasn't moved
+# beyond the deadband. Worst-case command latency: 100 ms.
+_GRIPPER_WRITE_MIN_INTERVAL = 0.1   # seconds (10 Hz cap)
+_GRIPPER_READ_MIN_INTERVAL = 0.1    # seconds (10 Hz cap)
+_GRIPPER_WRITE_DEADBAND = 20        # SCS3045M counts (range 900-2200)
+
 
 def _aa_from_quat(quat: np.ndarray) -> np.ndarray:
     """Convert a quaternion to an axis-angle representation.
@@ -177,6 +185,9 @@ class XArmRobot(Robot):
         self._control_frequency = control_frequency
         self._last_gripper_pos = float(self.GRIPPER_OPEN)
         self._last_gripper_err_code: Optional[int] = None
+        self._last_gripper_read_time = 0.0
+        self._last_gripper_write_time = 0.0
+        self._last_gripper_write_pos = -1  # sentinel: any real target trips the deadband
         self._clear_error_states()
         self._set_gripper_position(self.GRIPPER_OPEN)
 
@@ -224,6 +235,10 @@ class XArmRobot(Robot):
     def _get_gripper_pos(self) -> float:
         if self.robot is None:
             return self._last_gripper_pos
+        now = time.time()
+        if now - self._last_gripper_read_time < _GRIPPER_READ_MIN_INTERVAL:
+            return self._last_gripper_pos
+        self._last_gripper_read_time = now
         data = [
             _SCS_SLAVE_ID,
             0x03,
@@ -250,6 +265,15 @@ class XArmRobot(Robot):
         if self.robot is None:
             return
         pos_int = int(max(self.GRIPPER_CLOSE, min(self.GRIPPER_OPEN, pos)))
+        # Deadband: skip writes that would not meaningfully move the jaw.
+        if abs(pos_int - self._last_gripper_write_pos) < _GRIPPER_WRITE_DEADBAND:
+            return
+        # Rate-limit: cap writes at ~10 Hz to keep the xArm T-GPIO Modbus quiet.
+        now = time.time()
+        if now - self._last_gripper_write_time < _GRIPPER_WRITE_MIN_INTERVAL:
+            return
+        self._last_gripper_write_time = now
+        self._last_gripper_write_pos = pos_int
         data = [
             _SCS_SLAVE_ID,
             0x06,
@@ -355,7 +379,14 @@ class XArmRobot(Robot):
         # threhold xyz to be in  min max
         ret = self.robot.set_servo_angle_j(joints, wait=False, is_radian=True)
         if ret in [1, 9]:
-            self._clear_error_states()
+            # Single retry before the ~4 s _clear_error_states recovery. A ret=1
+            # often comes from a transient cross-bus hiccup with the gripper's
+            # T-GPIO Modbus and the controller recovers within one tick — paying
+            # the full recovery there causes the visible jerk documented in
+            # docs/log/2026-05-25-jittering-issue.md.
+            ret = self.robot.set_servo_angle_j(joints, wait=False, is_radian=True)
+            if ret in [1, 9]:
+                self._clear_error_states()
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         state = self.get_state()

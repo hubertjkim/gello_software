@@ -17,6 +17,8 @@ from dynamixel_sdk.robotis_def import (
     DXL_LOWORD,
 )
 
+from gello.utils import jitter_trace
+
 # Constants
 ADDR_TORQUE_ENABLE = 64
 ADDR_GOAL_POSITION = 116
@@ -277,6 +279,13 @@ class DynamixelDriver(DynamixelDriverProtocol):
         if not self._portHandler.setBaudRate(self._baudrate):
             raise RuntimeError(f"Failed to change the baudrate, {self._baudrate}")
 
+        # Settle delay: on a freshly-opened FTDI port the RS-485 transceiver's
+        # direction line hasn't settled yet (or the FTDI latency timer hasn't
+        # elapsed), so the first set_torque_mode write below can time out with
+        # -3001 on a random ID. See docs/log/2026-05-28-gello-lerobot-record.md
+        # section R3.
+        time.sleep(0.1)
+
         # Add parameters for each Dynamixel servo to the group sync read
         for dxl_id in self._ids:
             if not self._groupSyncRead.addParam(dxl_id):
@@ -490,6 +499,7 @@ class DynamixelDriver(DynamixelDriverProtocol):
                         )
                 self._joint_angles = _joint_angles
                 self._velocities = _velocities
+                jitter_trace.tap("T1b_bus_read", _joint_angles)
             # self._groupSyncRead.clearParam()
 
     def get_positions_and_velocities(self) -> Tuple[np.ndarray, np.ndarray]:
@@ -509,6 +519,7 @@ class DynamixelDriver(DynamixelDriverProtocol):
         while self._joint_angles is None:
             time.sleep(0.1)
         _j = self._joint_angles.copy()
+        jitter_trace.tap("T1_raw_ticks", _j)
         return _j / 2048.0 * np.pi
 
     def get_positions(self) -> np.ndarray:

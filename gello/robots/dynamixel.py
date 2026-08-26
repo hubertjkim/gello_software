@@ -3,6 +3,7 @@ from typing import Dict, Optional, Sequence, Tuple
 import numpy as np
 
 from gello.robots.robot import Robot
+from gello.utils import jitter_trace
 
 
 class DynamixelRobot(Robot):
@@ -122,6 +123,7 @@ class DynamixelRobot(Robot):
             pos = self._last_pos * (1 - self._alpha) + pos * self._alpha
             self._last_pos = pos
 
+        jitter_trace.tap("T2_post_ema", pos)
         return pos
 
     def command_joint_state(self, joint_state: np.ndarray) -> None:

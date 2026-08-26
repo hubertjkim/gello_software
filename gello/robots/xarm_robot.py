@@ -7,6 +7,7 @@ import numpy as np
 from pyquaternion import Quaternion
 
 from gello.robots.robot import Robot
+from gello.utils import jitter_trace
 
 # SCS3045M gripper Modbus register constants are sourced from
 # hygradme/OpenParallelGripper @ 659f8fa6
@@ -302,6 +303,7 @@ class XArmRobot(Robot):
             # update last state
             self.last_state = self._update_last_state()
             with self.target_command_lock:
+                jitter_trace.tap("T3_pre_clamp_target", self.target_command["joints"])
                 joint_delta = np.array(
                     self.target_command["joints"] - self.last_state.joints()
                 )
@@ -376,6 +378,7 @@ class XArmRobot(Robot):
     ) -> None:
         if self.robot is None:
             return
+        jitter_trace.tap("T4_final_command", joints)
         # threhold xyz to be in  min max
         ret = self.robot.set_servo_angle_j(joints, wait=False, is_radian=True)
         if ret in [1, 9]:

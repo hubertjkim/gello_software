@@ -23,7 +23,12 @@ def print_color(*args, color=None, attrs=(), **kwargs):
 @dataclass
 class Args:
     agent: str = "none"
-    robot_port: int = 6001
+    robot_port: int = 6010
+    """Default moved from 6001 -> 6010 (2026-08-30): a long-running VS Code
+    Node.js utility process on this host holds port 6001 persistently
+    (confirmed via /proc/net/tcp, ~1h47m uptime, not a one-off), colliding
+    with GELLO's control channel every time. Must match launch_nodes.py's
+    robot_port on the follower side."""
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
     hostname: str = "127.0.0.1"

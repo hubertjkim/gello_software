@@ -10,7 +10,12 @@ from gello.zmq_core.robot_node import ZMQServerRobot
 @dataclass
 class Args:
     robot: str = "xarm"
-    robot_port: int = 6001
+    robot_port: int = 6010
+    """Default moved from 6001 -> 6010 (2026-08-30): a long-running VS Code
+    Node.js utility process on this host holds port 6001 persistently
+    (confirmed via /proc/net/tcp, ~1h47m uptime, not a one-off), colliding
+    with GELLO's control channel every time. 6010 verified free and used
+    successfully end-to-end on real hardware the same day."""
     hostname: str = "127.0.0.1"
     robot_ip: str = "192.168.1.156"
     real: bool = True

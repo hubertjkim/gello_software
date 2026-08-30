@@ -13,11 +13,22 @@ from gello.utils import jitter_trace
 
 # Dedicated PUB port for mirroring commanded joint targets to the Isaac Sim
 # bridge relay (custom_packages/gello_software/scripts/isaac_joint_relay.py).
-# Separate from the existing ZMQ REQ/REP robot-control channel (port 6001,
-# gello/zmq_core/robot_node.py's DEFAULT_ROBOT_PORT=6000 overridden to 6001
-# by this project's launch_nodes.py/run_env.py) to avoid binding two sockets
-# to the same port in the same process.
+# Separate from the existing ZMQ REQ/REP robot-control channel (port 6010 as
+# of 2026-08-30, gello/zmq_core/robot_node.py's DEFAULT_ROBOT_PORT=6000
+# overridden by this project's launch_nodes.py/run_env.py -- moved off 6001
+# after a persistent VS Code Node.js process on this host was found squatting
+# on it) to avoid binding two sockets to the same port in the same process.
 ISAAC_RELAY_PORT = 6002
+
+# Dedicated PUB port for mirroring the REAL arm's actual joint feedback
+# (self.last_state.joints(), sourced from get_servo_angle() in
+# _update_last_state()) to isaac_joint_relay.py's second publisher, which
+# republishes it onto /xarm/joint_states (Phase 6 prerequisite,
+# 2026-08-30-001). Distinct from ISAAC_RELAY_PORT (6002, commanded target,
+# not feedback) -- a separate port keeps the two ZMQ streams independent
+# per the task's g2 guard (do not modify the existing /isaac_joint_commands
+# tap or its relay behavior, only add alongside it).
+ARM_FEEDBACK_RELAY_PORT = 6003
 
 # Reference joint pose used as the reported "current state" when
 # self.robot is None (real=False / --no-real, no physical arm) -- matches
@@ -213,6 +224,10 @@ class XArmRobot(Robot):
         self._isaac_zmq_context = zmq.Context()
         self._isaac_zmq_socket = self._isaac_zmq_context.socket(zmq.PUB)
         self._isaac_zmq_socket.bind(f"tcp://127.0.0.1:{ISAAC_RELAY_PORT}")
+
+        self._arm_feedback_zmq_context = zmq.Context()
+        self._arm_feedback_zmq_socket = self._arm_feedback_zmq_context.socket(zmq.PUB)
+        self._arm_feedback_zmq_socket.bind(f"tcp://127.0.0.1:{ARM_FEEDBACK_RELAY_PORT}")
 
         self._no_robot_joints = NO_ROBOT_REFERENCE_JOINTS.copy()
 
@@ -445,6 +460,22 @@ class XArmRobot(Robot):
         if self.robot is None:
             return
         jitter_trace.tap("T4_final_command", joints)
+
+        # Real-arm-feedback tap for Drake's /xarm/joint_states (Phase 6
+        # prerequisite, 2026-08-30-001) -- deliberately gated behind the
+        # `self.robot is None` guard above (opposite of the /isaac_joint_commands
+        # tap's unconditional placement): a real feedback topic has nothing
+        # meaningful to report without a physical arm. self.last_state was
+        # refreshed by _update_last_state() immediately before this call
+        # (see _robot_thread), so .joints() here is the arm's actual
+        # get_servo_angle() reading, not the commanded target `joints` above.
+        try:
+            self._arm_feedback_zmq_socket.send(
+                pickle.dumps(self.last_state.joints().tolist()), flags=zmq.NOBLOCK
+            )
+        except zmq.Again:
+            pass
+
         # threhold xyz to be in  min max
         ret = self.robot.set_servo_angle_j(joints, wait=False, is_radian=True)
         if ret in [1, 9]:

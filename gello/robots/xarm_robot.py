@@ -1,13 +1,33 @@
 import dataclasses
+import pickle
 import threading
 import time
 from typing import Dict, Optional
 
 import numpy as np
+import zmq
 from pyquaternion import Quaternion
 
 from gello.robots.robot import Robot
 from gello.utils import jitter_trace
+
+# Dedicated PUB port for mirroring commanded joint targets to the Isaac Sim
+# bridge relay (custom_packages/gello_software/scripts/isaac_joint_relay.py).
+# Separate from the existing ZMQ REQ/REP robot-control channel (port 6001,
+# gello/zmq_core/robot_node.py's DEFAULT_ROBOT_PORT=6000 overridden to 6001
+# by this project's launch_nodes.py/run_env.py) to avoid binding two sockets
+# to the same port in the same process.
+ISAAC_RELAY_PORT = 6002
+
+# Reference joint pose used as the reported "current state" when
+# self.robot is None (real=False / --no-real, no physical arm) -- matches
+# experiments/run_env.py's --agent=gello reset_joints[:6] and
+# isaac_sim_xarm_bridge/lite6_bridge_server.py's ArticulationCfg init_state
+# (the operator's fixed real-xArm startup posture). Without a real
+# connection there is no hardware feedback to report, so this is the
+# reasonable presumed-position default, updated to the last actually
+# commanded target thereafter (see _set_position / _update_last_state).
+NO_ROBOT_REFERENCE_JOINTS = np.array([0.0, 0.0, np.pi / 2, 0.0, 0.0, 0.0])
 
 # SCS3045M gripper Modbus register constants are sourced from
 # hygradme/OpenParallelGripper @ 659f8fa6
@@ -59,7 +79,14 @@ def _quat_from_aa(aa: np.ndarray) -> np.ndarray:
     """
     assert aa.shape == (3,), "Input axis-angle must be a 3D vector."
     norm = np.linalg.norm(aa)
-    assert norm != 0, "Input axis-angle must not be a zero vector."
+    if norm == 0:
+        # Zero axis-angle magnitude IS a zero rotation -- the identity
+        # quaternion, not an invalid input. This is the placeholder value
+        # _update_last_state() returns when self.robot is None (real=False,
+        # no physical arm), so this path is now reachable in normal use
+        # (XArmRobot(real=False) / launch_nodes.py --no-real), not just a
+        # theoretical edge case.
+        return np.array([0.0, 0.0, 0.0, 1.0])
     axis = aa / norm  # Normalize the axis-angle
 
     Q = Quaternion(axis=axis, angle=norm)
@@ -183,6 +210,12 @@ class XArmRobot(Robot):
         else:
             self.robot = None
 
+        self._isaac_zmq_context = zmq.Context()
+        self._isaac_zmq_socket = self._isaac_zmq_context.socket(zmq.PUB)
+        self._isaac_zmq_socket.bind(f"tcp://127.0.0.1:{ISAAC_RELAY_PORT}")
+
+        self._no_robot_joints = NO_ROBOT_REFERENCE_JOINTS.copy()
+
         self._control_frequency = control_frequency
         self._last_gripper_pos = float(self.GRIPPER_OPEN)
         self._last_gripper_err_code: Optional[int] = None
@@ -200,10 +233,18 @@ class XArmRobot(Robot):
             "gripper": 0,
         }
         self.running = True
-        self.command_thread = None
-        if real:
-            self.command_thread = threading.Thread(target=self._robot_thread)
-            self.command_thread.start()
+        # Always start the control thread, even when real=False (--no-real).
+        # Every call inside _robot_thread's loop body (_update_last_state,
+        # _set_position, _set_gripper_position) already guards on
+        # `self.robot is None`, so this is safe with no physical arm. Without
+        # this, target_command (set via set_command()/command_joint_state(),
+        # the ZMQ RPC path GELLO teleop and run_env.py's reset interpolation
+        # both use) would never actually get applied -- _set_position() is
+        # only ever called from this loop, and that's where the Isaac Sim
+        # relay publish lives, so commands would silently never reach Isaac
+        # Sim under --no-real without this thread running.
+        self.command_thread = threading.Thread(target=self._robot_thread)
+        self.command_thread.start()
 
     def get_state(self) -> RobotState:
         with self.last_state_lock:
@@ -345,7 +386,12 @@ class XArmRobot(Robot):
     def _update_last_state(self) -> RobotState:
         with self.last_state_lock:
             if self.robot is None:
-                return RobotState(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, np.zeros(3))
+                j = self._no_robot_joints
+                return RobotState(
+                    0, 0, 0, self._last_gripper_pos,
+                    j[0], j[1], j[2], j[3], j[4], j[5],
+                    np.zeros(3),
+                )
 
             gripper_pos = self._get_gripper_pos()
 
@@ -376,6 +422,26 @@ class XArmRobot(Robot):
         self,
         joints: np.ndarray,
     ) -> None:
+        try:
+            # .tolist(): the relay runs under system Python 3.10 (numpy
+            # 1.21.5), while this process runs under the conda env (numpy
+            # 2.2.6) -- numpy's pickle format isn't cross-version-compatible
+            # (numpy 2.x pickles reference the internal `numpy._core` module
+            # path, absent in 1.x), so a plain list sidesteps numpy's pickle
+            # format on this cross-environment hop entirely.
+            self._isaac_zmq_socket.send(
+                pickle.dumps(joints.tolist()), flags=zmq.NOBLOCK
+            )
+        except zmq.Again:
+            pass
+
+        # Track the last commanded target as the presumed "current state"
+        # when there's no physical robot to report real feedback (see
+        # _update_last_state / NO_ROBOT_REFERENCE_JOINTS) -- otherwise
+        # run_env.py's reset-safety delta check (and any other get_obs()
+        # caller) would compare against a stale/wrong value forever.
+        self._no_robot_joints = joints
+
         if self.robot is None:
             return
         jitter_trace.tap("T4_final_command", joints)

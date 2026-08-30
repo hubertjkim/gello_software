@@ -1,21 +1,25 @@
 # keep in alphabetical order
 dm_control
+dynamixel-sdk
+mujoco
 omegaconf==2.3.0
+opencv-python
 Pillow
 pin==3.7.0
+pupil_apriltags
 pygame
 pyspacemouse
 PyQt6
 pyquaternion
 pyrealsense2
+pyyaml
 pyzmq
 pure-python-adb
 quaternion
+scipy
 setuptools
 tyro
 ur-rtde
 zmq
-xarm
-xarm-python-sdk
 numpy-quaternion
 termcolor

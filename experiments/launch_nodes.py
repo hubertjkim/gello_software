@@ -12,7 +12,14 @@ class Args:
     robot: str = "xarm"
     robot_port: int = 6001
     hostname: str = "127.0.0.1"
-    robot_ip: str = "192.168.1.10"
+    robot_ip: str = "192.168.1.156"
+    real: bool = True
+    """Set --no-real to skip connecting to the physical xArm controller
+    (XArmRobot(real=False)) -- e.g. for mirroring GELLO into Isaac Sim
+    without the physical follower arm powered on. Only affects --robot=xarm;
+    XArmAPI's connect() raises outright (does not degrade gracefully) when
+    the controller is unreachable, so this must be set before construction,
+    not caught after."""
 
 
 def launch_robot_server(args: Args):
@@ -69,7 +76,7 @@ def launch_robot_server(args: Args):
         if args.robot == "xarm":
             from gello.robots.xarm_robot import XArmRobot
 
-            robot = XArmRobot(ip=args.robot_ip)
+            robot = XArmRobot(ip=args.robot_ip, real=args.real)
         elif args.robot == "ur":
             from gello.robots.ur import URRobot
 
